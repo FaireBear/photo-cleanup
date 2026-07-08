@@ -105,6 +105,7 @@
     color: var(--muted);
   }
   .strength input[type=range] { accent-color: var(--accent); width: 140px; }
+  .strength input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; }
   .strength output { color: var(--text); min-width: 2.2em; text-align: right; }
 
   /* Comparison viewer */
@@ -215,6 +216,10 @@
       <input type="range" id="strength" min="10" max="100" value="55">
       <output id="strengthVal">55</output>
     </label>
+    <label class="strength" title="Auto-detect and crop a solid frame around the photo">
+      <input type="checkbox" id="removeBorder" checked>
+      Remove border
+    </label>
     <button id="downloadBtn" class="btn-secondary" disabled>⬇ Download result</button>
     <button id="resetBtn" class="btn-secondary" disabled>↺ New image</button>
   </div>
@@ -256,6 +261,8 @@
   let cleanedDone = false;
   let fileName = 'image.jpg';
   let worker = null;
+  let lastCrop = null;        // region kept after border removal
+  const removeBorderEl = document.getElementById('removeBorder');
 
   strengthEl.addEventListener('input', () => strengthVal.textContent = strengthEl.value);
 
@@ -347,15 +354,79 @@
   /* ---------- Cleanup (worker) ---------- */
   const workerSrc = `
     self.onmessage = (e) => {
-      const { data, width, height, strength } = e.data;
-      const src = new Uint8ClampedArray(data);
+      const { data, width, height, strength, removeBorder } = e.data;
+      let src = new Uint8ClampedArray(data);
+      let w = width, h = height;
+
+      // 0) Detect & crop a solid border/frame around the photo
+      let crop = { x: 0, y: 0, w, h };
+      if (removeBorder) {
+        crop = detectBorder(src, w, h);
+        if (crop.x || crop.y || crop.w !== w || crop.h !== h) {
+          const cropped = new Uint8ClampedArray(crop.w * crop.h * 4);
+          for (let y = 0; y < crop.h; y++) {
+            const s = ((y + crop.y) * w + crop.x) * 4;
+            cropped.set(src.subarray(s, s + crop.w * 4), y * crop.w * 4);
+          }
+          src = cropped;
+        }
+      }
 
       // 1) Despeckle: 3x3 median on pixels that differ strongly from neighbours
-      const med = despeckle(src, width, height);
+      const med = despeckle(src, crop.w, crop.h);
       // 2) Edge-preserving bilateral smoothing to melt block/mosquito artifacts
-      const out = bilateral(med, width, height, strength);
+      const out = bilateral(med, crop.w, crop.h, strength);
 
-      self.postMessage({ done: true, data: out.buffer }, [out.buffer]);
+      self.postMessage({ done: true, data: out.buffer, crop }, [out.buffer]);
+
+      function detectBorder(px, w, h) {
+        const maxX = Math.floor(w * 0.25), maxY = Math.floor(h * 0.25);
+        const tolDev = 16;    // max avg deviation within a uniform border line
+        const tolColor = 34;  // max distance from the border's reference colour
+
+        function lineStats(isRow, idx) {
+          const n = isRow ? w : h;
+          let sr = 0, sg = 0, sb = 0;
+          for (let i = 0; i < n; i++) {
+            const p = isRow ? (idx * w + i) * 4 : (i * w + idx) * 4;
+            sr += px[p]; sg += px[p + 1]; sb += px[p + 2];
+          }
+          const mr = sr / n, mg = sg / n, mb = sb / n;
+          let dev = 0;
+          for (let i = 0; i < n; i++) {
+            const p = isRow ? (idx * w + i) * 4 : (i * w + idx) * 4;
+            dev += (Math.abs(px[p] - mr) + Math.abs(px[p + 1] - mg) + Math.abs(px[p + 2] - mb)) / 3;
+          }
+          return { r: mr, g: mg, b: mb, dev: dev / n };
+        }
+
+        function colorDist(a, b) {
+          return (Math.abs(a.r - b.r) + Math.abs(a.g - b.g) + Math.abs(a.b - b.b)) / 3;
+        }
+
+        function scan(isRow, from, dir, max) {
+          const ref = lineStats(isRow, from);
+          if (ref.dev > tolDev) return 0;   // outermost line already busy → no border
+          let t = 0, breakStats = null;
+          for (let d = 0; d < max; d++) {
+            const s = lineStats(isRow, from + dir * d);
+            if (s.dev > tolDev || colorDist(s, ref) > tolColor) { breakStats = s; break; }
+            t = d + 1;
+          }
+          if (!breakStats || t < 2) return 0;  // ran to max (or too thin) → not a frame
+          // Require a SHARP transition where the border ends. A gradual change
+          // (e.g. smooth sky) is photo content, not a frame.
+          const prev = lineStats(isRow, from + dir * (t - 1));
+          if (breakStats.dev <= tolDev && colorDist(breakStats, prev) < 22) return 0;
+          return Math.min(t + 1, max);  // +1px safety margin
+        }
+
+        const top = scan(true, 0, 1, maxY);
+        const bottom = scan(true, h - 1, -1, maxY);
+        const left = scan(false, 0, 1, maxX);
+        const right = scan(false, w - 1, -1, maxX);
+        return { x: left, y: top, w: w - left - right, h: h - top - bottom };
+      }
 
       function despeckle(px, w, h) {
         const out = new Uint8ClampedArray(px);
@@ -468,23 +539,50 @@
         return;
       }
       if (e.data.done) {
-        const cleaned = new ImageData(new Uint8ClampedArray(e.data.data), w, h);
-        ctx.putImageData(cleaned, 0, 0);
+        const crop = e.data.crop;
+        lastCrop = crop;
+        const cleaned = new ImageData(new Uint8ClampedArray(e.data.data), crop.w, crop.h);
+        const borderRemoved = crop.w !== w || crop.h !== h;
+        ctx.clearRect(0, 0, w, h);
+        if (borderRemoved) drawChecker(ctx, w, h);
+        ctx.putImageData(cleaned, crop.x, crop.y);
         cleanedDone = true;
         cleanBtn.disabled = false;
         downloadBtn.disabled = false;
         progressBar.style.display = 'none';
-        setStatus('Done! Drag the slider to compare before / after.');
+        setStatus(borderRemoved
+          ? `Done! Border removed (kept ${crop.w}×${crop.h}). Drag the slider to compare.`
+          : 'Done! No border detected. Drag the slider to compare before / after.');
         setSlider(0.5);
       }
     };
-    wk.postMessage({ data: imgData.data.buffer, width: w, height: h, strength: +strengthEl.value }, [imgData.data.buffer]);
+    wk.postMessage({
+      data: imgData.data.buffer, width: w, height: h,
+      strength: +strengthEl.value, removeBorder: removeBorderEl.checked
+    }, [imgData.data.buffer]);
   });
 
   /* ---------- Download & reset ---------- */
+  function drawChecker(ctx, w, h) {
+    const s = 12;
+    for (let y = 0; y < h; y += s)
+      for (let x = 0; x < w; x += s) {
+        ctx.fillStyle = ((x + y) / s) % 2 ? '#2a2f3f' : '#171a24';
+        ctx.fillRect(x, y, s, s);
+      }
+  }
+
   downloadBtn.addEventListener('click', () => {
     if (!cleanedDone) return;
-    afterCanvas.toBlob(blob => {
+    let exportCanvas = afterCanvas;
+    if (lastCrop && (lastCrop.w !== afterCanvas.width || lastCrop.h !== afterCanvas.height)) {
+      exportCanvas = document.createElement('canvas');
+      exportCanvas.width = lastCrop.w;
+      exportCanvas.height = lastCrop.h;
+      exportCanvas.getContext('2d').putImageData(
+        afterCanvas.getContext('2d').getImageData(lastCrop.x, lastCrop.y, lastCrop.w, lastCrop.h), 0, 0);
+    }
+    exportCanvas.toBlob(blob => {
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       a.download = fileName.replace(/\.jpe?g$/i, '') + '-cleaned.jpg';
