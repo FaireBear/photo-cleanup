@@ -358,17 +358,23 @@
       let src = new Uint8ClampedArray(data);
       let w = width, h = height;
 
-      // 0) Detect & crop a solid border/frame around the photo
+      // 0) Detect & crop border layers around the photo. Frames are often
+      // NESTED (white scan margin → thin black/gray line → photo), so peel
+      // layers repeatedly until no further border is found.
       let crop = { x: 0, y: 0, w, h };
       if (removeBorder) {
-        crop = detectBorder(src, w, h);
-        if (crop.x || crop.y || crop.w !== w || crop.h !== h) {
-          const cropped = new Uint8ClampedArray(crop.w * crop.h * 4);
-          for (let y = 0; y < crop.h; y++) {
-            const s = ((y + crop.y) * w + crop.x) * 4;
-            cropped.set(src.subarray(s, s + crop.w * 4), y * crop.w * 4);
+        for (let iter = 0; iter < 8; iter++) {
+          // don't let accumulated cropping eat more than ~35% per side
+          if (crop.w < w * 0.3 || crop.h < h * 0.3) break;
+          const c = detectBorder(src, crop.w, crop.h);
+          if (!c.x && !c.y && c.w === crop.w && c.h === crop.h) break;
+          const cropped = new Uint8ClampedArray(c.w * c.h * 4);
+          for (let y = 0; y < c.h; y++) {
+            const s = ((y + c.y) * crop.w + c.x) * 4;
+            cropped.set(src.subarray(s, s + c.w * 4), y * c.w * 4);
           }
           src = cropped;
+          crop = { x: crop.x + c.x, y: crop.y + c.y, w: c.w, h: c.h };
         }
       }
 
@@ -413,7 +419,7 @@
             if (s.dev > tolDev || colorDist(s, ref) > tolColor) { breakStats = s; break; }
             t = d + 1;
           }
-          if (!breakStats || t < 2) return 0;  // ran to max (or too thin) → not a frame
+          if (!breakStats || t < 1) return 0;  // ran to max → not a frame (thin 1-2px lines allowed)
           // Require a SHARP transition where the border ends. A gradual change
           // (e.g. smooth sky) is photo content, not a frame.
           const prev = lineStats(isRow, from + dir * (t - 1));
