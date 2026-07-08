@@ -119,21 +119,20 @@
     touch-action: none;
     cursor: ew-resize;
   }
-  #compare canvas {
+  #afterCanvas {
     display: block;
     width: 100%;
     height: auto;
   }
-  #afterLayer {
-    position: absolute;
-    inset: 0;
-  }
   #beforeLayer {
     position: absolute;
-    inset: 0;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 50%;
     overflow: hidden;
   }
-  #beforeLayer canvas { position: absolute; top: 0; left: 0; height: 100%; width: auto; max-width: none; }
+  #beforeCanvas { display: block; position: absolute; top: 0; left: 0; max-width: none; }
   #divider {
     position: absolute;
     top: 0;
@@ -225,7 +224,7 @@
 
   <div id="viewerWrap">
     <div id="compare">
-      <div id="afterLayer"><canvas id="afterCanvas"></canvas></div>
+      <canvas id="afterCanvas"></canvas>
       <div id="beforeLayer"><canvas id="beforeCanvas"></canvas></div>
       <div id="divider"></div>
       <span class="tag before">BEFORE</span>
@@ -316,8 +315,10 @@
 
   /* ---------- Comparison slider ---------- */
   function sizeBeforeLayer() {
-    // Before-canvas inside the clipping layer must match rendered after-canvas size
+    // Before-canvas inside the clipping layer must match the rendered after-canvas size,
+    // so the two images stay pixel-aligned while the layer above clips.
     const rect = afterCanvas.getBoundingClientRect();
+    if (rect.width < 2) { requestAnimationFrame(sizeBeforeLayer); return; }
     beforeCanvas.style.width = rect.width + 'px';
     beforeCanvas.style.height = rect.height + 'px';
   }
