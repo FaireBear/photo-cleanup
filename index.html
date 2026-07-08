@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Photo Cleanup — remove JPEG artifacts</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --panel: #181b24;
+    --panel2: #1f2330;
+    --accent: #6c8cff;
+    --accent2: #8f6cff;
+    --text: #e8eaf2;
+    --muted: #9aa0b4;
+    --border: #2a2f3f;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 32px 20px 60px;
+  }
+  header { text-align: center; margin-bottom: 28px; }
+  header h1 {
+    font-size: 1.9rem;
+    font-weight: 700;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  header p { color: var(--muted); margin-top: 6px; font-size: .95rem; }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 24px;
+    width: 100%;
+    max-width: 860px;
+  }
+
+  /* Drop zone */
+  #dropZone {
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    padding: 48px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .2s, background .2s;
+  }
+  #dropZone:hover, #dropZone.dragover {
+    border-color: var(--accent);
+    background: rgba(108, 140, 255, .06);
+  }
+  #dropZone .icon { font-size: 2.4rem; margin-bottom: 10px; }
+  #dropZone strong { color: var(--accent); }
+  #dropZone p.hint { color: var(--muted); font-size: .85rem; margin-top: 8px; }
+  #fileInput { display: none; }
+
+  /* Controls */
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    align-items: center;
+    justify-content: center;
+    margin-top: 20px;
+  }
+  button {
+    font: inherit;
+    border: none;
+    border-radius: 10px;
+    padding: 11px 22px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: transform .1s, opacity .2s;
+  }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button:not(:disabled):active { transform: scale(.97); }
+  .btn-primary {
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    color: #fff;
+  }
+  .btn-secondary {
+    background: var(--panel2);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  .strength {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 8px 14px;
+    font-size: .9rem;
+    color: var(--muted);
+  }
+  .strength input[type=range] { accent-color: var(--accent); width: 140px; }
+  .strength output { color: var(--text); min-width: 2.2em; text-align: right; }
+
+  /* Comparison viewer */
+  #viewerWrap { display: none; margin-top: 22px; }
+  #compare {
+    position: relative;
+    width: 100%;
+    border-radius: 12px;
+    overflow: hidden;
+    background: #000;
+    user-select: none;
+    touch-action: none;
+    cursor: ew-resize;
+  }
+  #compare canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  #afterLayer {
+    position: absolute;
+    inset: 0;
+  }
+  #beforeLayer {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+  }
+  #beforeLayer canvas { position: absolute; top: 0; left: 0; height: 100%; width: auto; max-width: none; }
+  #divider {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: #fff;
+    box-shadow: 0 0 8px rgba(0,0,0,.6);
+    transform: translateX(-50%);
+    pointer-events: none;
+  }
+  #divider::after {
+    content: "◂ ▸";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: #fff;
+    color: #333;
+    font-size: .75rem;
+    letter-spacing: 1px;
+    padding: 6px 9px;
+    border-radius: 999px;
+    white-space: nowrap;
+    box-shadow: 0 2px 8px rgba(0,0,0,.4);
+  }
+  .tag {
+    position: absolute;
+    top: 12px;
+    font-size: .72rem;
+    font-weight: 700;
+    letter-spacing: .08em;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: rgba(0,0,0,.55);
+    color: #fff;
+    pointer-events: none;
+    z-index: 2;
+  }
+  .tag.before { left: 12px; }
+  .tag.after { right: 12px; }
+
+  #status { text-align: center; color: var(--muted); font-size: .88rem; margin-top: 14px; min-height: 1.2em; }
+  #status.working { color: var(--accent); }
+
+  /* progress bar */
+  #progressBar {
+    display: none;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--panel2);
+    margin-top: 10px;
+    overflow: hidden;
+  }
+  #progressBar > div {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    transition: width .15s;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Photo Cleanup</h1>
+  <p>Remove JPEG compression artifacts, speckles &amp; noise — right in your browser. Nothing is uploaded anywhere.</p>
+</header>
+
+<div class="card">
+  <div id="dropZone">
+    <div class="icon">🖼️</div>
+    <div><strong>Click to choose a .jpg</strong> or drag &amp; drop it here</div>
+    <p class="hint">JPEG / JPG images · processed locally on your device</p>
+    <input type="file" id="fileInput" accept=".jpg,.jpeg,image/jpeg">
+  </div>
+
+  <div class="controls">
+    <button id="cleanBtn" class="btn-primary" disabled>✨ Clean up</button>
+    <label class="strength">
+      Strength
+      <input type="range" id="strength" min="10" max="100" value="55">
+      <output id="strengthVal">55</output>
+    </label>
+    <button id="downloadBtn" class="btn-secondary" disabled>⬇ Download result</button>
+    <button id="resetBtn" class="btn-secondary" disabled>↺ New image</button>
+  </div>
+
+  <div id="progressBar"><div></div></div>
+  <div id="status">Choose an image to get started.</div>
+
+  <div id="viewerWrap">
+    <div id="compare">
+      <div id="afterLayer"><canvas id="afterCanvas"></canvas></div>
+      <div id="beforeLayer"><canvas id="beforeCanvas"></canvas></div>
+      <div id="divider"></div>
+      <span class="tag before">BEFORE</span>
+      <span class="tag after">AFTER</span>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const dropZone = document.getElementById('dropZone');
+  const fileInput = document.getElementById('fileInput');
+  const cleanBtn = document.getElementById('cleanBtn');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const resetBtn = document.getElementById('resetBtn');
+  const strengthEl = document.getElementById('strength');
+  const strengthVal = document.getElementById('strengthVal');
+  const statusEl = document.getElementById('status');
+  const viewerWrap = document.getElementById('viewerWrap');
+  const compare = document.getElementById('compare');
+  const beforeLayer = document.getElementById('beforeLayer');
+  const beforeCanvas = document.getElementById('beforeCanvas');
+  const afterCanvas = document.getElementById('afterCanvas');
+  const divider = document.getElementById('divider');
+  const progressBar = document.getElementById('progressBar');
+  const progressFill = progressBar.firstElementChild;
+
+  let originalImage = null;   // ImageBitmap / HTMLImageElement
+  let cleanedDone = false;
+  let fileName = 'image.jpg';
+  let worker = null;
+
+  strengthEl.addEventListener('input', () => strengthVal.textContent = strengthEl.value);
+
+  /* ---------- File loading ---------- */
+  dropZone.addEventListener('click', () => fileInput.click());
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files.length) handleFile(fileInput.files[0]);
+  });
+
+  function setStatus(msg, working = false) {
+    statusEl.textContent = msg;
+    statusEl.classList.toggle('working', working);
+  }
+
+  async function handleFile(file) {
+    if (!/\.jpe?g$/i.test(file.name) && file.type !== 'image/jpeg') {
+      setStatus('⚠️ Please choose a .jpg / .jpeg file.');
+      return;
+    }
+    fileName = file.name;
+    setStatus('Loading image…', true);
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      originalImage = img;
+      drawInitial();
+      cleanBtn.disabled = false;
+      resetBtn.disabled = false;
+      downloadBtn.disabled = true;
+      cleanedDone = false;
+      setStatus(`Loaded “${file.name}” (${img.naturalWidth}×${img.naturalHeight}). Hit “Clean up”.`);
+    };
+    img.onerror = () => setStatus('⚠️ Could not read that file.');
+    img.src = url;
+  }
+
+  function drawInitial() {
+    const w = originalImage.naturalWidth, h = originalImage.naturalHeight;
+    for (const c of [beforeCanvas, afterCanvas]) {
+      c.width = w; c.height = h;
+      c.getContext('2d').drawImage(originalImage, 0, 0);
+    }
+    viewerWrap.style.display = 'block';
+    requestAnimationFrame(() => {
+      sizeBeforeLayer();
+      setSlider(0.5);
+    });
+  }
+
+  /* ---------- Comparison slider ---------- */
+  function sizeBeforeLayer() {
+    // Before-canvas inside the clipping layer must match rendered after-canvas size
+    const rect = afterCanvas.getBoundingClientRect();
+    beforeCanvas.style.width = rect.width + 'px';
+    beforeCanvas.style.height = rect.height + 'px';
+  }
+  window.addEventListener('resize', sizeBeforeLayer);
+
+  function setSlider(frac) {
+    frac = Math.min(1, Math.max(0, frac));
+    beforeLayer.style.width = (frac * 100) + '%';
+    divider.style.left = (frac * 100) + '%';
+  }
+
+  function pointerFrac(e) {
+    const rect = compare.getBoundingClientRect();
+    return (e.clientX - rect.left) / rect.width;
+  }
+  let dragging = false;
+  compare.addEventListener('pointerdown', e => {
+    dragging = true;
+    compare.setPointerCapture(e.pointerId);
+    setSlider(pointerFrac(e));
+  });
+  compare.addEventListener('pointermove', e => { if (dragging) setSlider(pointerFrac(e)); });
+  compare.addEventListener('pointerup', () => dragging = false);
+  compare.addEventListener('pointercancel', () => dragging = false);
+
+  /* ---------- Cleanup (worker) ---------- */
+  const workerSrc = `
+    self.onmessage = (e) => {
+      const { data, width, height, strength } = e.data;
+      const src = new Uint8ClampedArray(data);
+
+      // 1) Despeckle: 3x3 median on pixels that differ strongly from neighbours
+      const med = despeckle(src, width, height);
+      // 2) Edge-preserving bilateral smoothing to melt block/mosquito artifacts
+      const out = bilateral(med, width, height, strength);
+
+      self.postMessage({ done: true, data: out.buffer }, [out.buffer]);
+
+      function despeckle(px, w, h) {
+        const out = new Uint8ClampedArray(px);
+        const r = new Uint8ClampedArray(9), g = new Uint8ClampedArray(9), b = new Uint8ClampedArray(9);
+        for (let y = 1; y < h - 1; y++) {
+          for (let x = 1; x < w - 1; x++) {
+            const i = (y * w + x) * 4;
+            let k = 0, sumL = 0;
+            for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+              const j = ((y + dy) * w + (x + dx)) * 4;
+              r[k] = px[j]; g[k] = px[j + 1]; b[k] = px[j + 2];
+              if (dx || dy) sumL += px[j] * 0.299 + px[j + 1] * 0.587 + px[j + 2] * 0.114;
+              k++;
+            }
+            const lum = px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114;
+            const avgN = sumL / 8;
+            if (Math.abs(lum - avgN) > 40) { // isolated speck → replace with median
+              out[i]     = median9(r);
+              out[i + 1] = median9(g);
+              out[i + 2] = median9(b);
+            }
+          }
+          if ((y & 63) === 0) self.postMessage({ progress: 0.25 * y / h });
+        }
+        return out;
+      }
+
+      function median9(a) {
+        const s = Array.from(a).sort((x, y) => x - y);
+        return s[4];
+      }
+
+      function bilateral(px, w, h, strength) {
+        const out = new Uint8ClampedArray(px.length);
+        const radius = strength > 70 ? 3 : 2;
+        const sigmaR = 8 + strength * 0.55;      // range sigma from strength
+        const twoSigmaR2 = 2 * sigmaR * sigmaR;
+        const sigmaS = radius;
+        // precompute spatial weights
+        const size = radius * 2 + 1;
+        const spatial = new Float32Array(size * size);
+        for (let dy = -radius; dy <= radius; dy++)
+          for (let dx = -radius; dx <= radius; dx++)
+            spatial[(dy + radius) * size + (dx + radius)] =
+              Math.exp(-(dx * dx + dy * dy) / (2 * sigmaS * sigmaS));
+        // precompute luminance
+        const lum = new Float32Array(w * h);
+        for (let i = 0, p = 0; i < lum.length; i++, p += 4)
+          lum[i] = px[p] * 0.299 + px[p + 1] * 0.587 + px[p + 2] * 0.114;
+        // precompute range weight LUT
+        const rangeLUT = new Float32Array(256);
+        for (let d = 0; d < 256; d++) rangeLUT[d] = Math.exp(-(d * d) / twoSigmaR2);
+
+        for (let y = 0; y < h; y++) {
+          const y0 = Math.max(0, y - radius), y1 = Math.min(h - 1, y + radius);
+          for (let x = 0; x < w; x++) {
+            const x0 = Math.max(0, x - radius), x1 = Math.min(w - 1, x + radius);
+            const ci = y * w + x;
+            const cl = lum[ci];
+            let wr = 0, wg = 0, wb = 0, wsum = 0;
+            for (let yy = y0; yy <= y1; yy++) {
+              const srow = (yy - y + radius) * size + radius - x;
+              const irow = yy * w;
+              for (let xx = x0; xx <= x1; xx++) {
+                const ni = irow + xx;
+                const d = Math.abs(lum[ni] - cl) | 0;
+                const wgt = spatial[srow + xx] * rangeLUT[d > 255 ? 255 : d];
+                const p = ni * 4;
+                wr += px[p] * wgt; wg += px[p + 1] * wgt; wb += px[p + 2] * wgt;
+                wsum += wgt;
+              }
+            }
+            const o = ci * 4;
+            out[o]     = wr / wsum;
+            out[o + 1] = wg / wsum;
+            out[o + 2] = wb / wsum;
+            out[o + 3] = px[o + 3];
+          }
+          if ((y & 31) === 0) self.postMessage({ progress: 0.25 + 0.75 * y / h });
+        }
+        return out;
+      }
+    };
+  `;
+
+  function getWorker() {
+    if (!worker) {
+      worker = new Worker(URL.createObjectURL(new Blob([workerSrc], { type: 'text/javascript' })));
+    }
+    return worker;
+  }
+
+  cleanBtn.addEventListener('click', () => {
+    if (!originalImage) return;
+    cleanBtn.disabled = true;
+    downloadBtn.disabled = true;
+    setStatus('Cleaning up artifacts…', true);
+    progressBar.style.display = 'block';
+    progressFill.style.width = '0%';
+
+    const w = afterCanvas.width, h = afterCanvas.height;
+    const ctx = afterCanvas.getContext('2d');
+    ctx.drawImage(originalImage, 0, 0);
+    const imgData = ctx.getImageData(0, 0, w, h);
+
+    const wk = getWorker();
+    wk.onmessage = (e) => {
+      if (e.data.progress !== undefined) {
+        progressFill.style.width = (e.data.progress * 100).toFixed(1) + '%';
+        return;
+      }
+      if (e.data.done) {
+        const cleaned = new ImageData(new Uint8ClampedArray(e.data.data), w, h);
+        ctx.putImageData(cleaned, 0, 0);
+        cleanedDone = true;
+        cleanBtn.disabled = false;
+        downloadBtn.disabled = false;
+        progressBar.style.display = 'none';
+        setStatus('Done! Drag the slider to compare before / after.');
+        setSlider(0.5);
+      }
+    };
+    wk.postMessage({ data: imgData.data.buffer, width: w, height: h, strength: +strengthEl.value }, [imgData.data.buffer]);
+  });
+
+  /* ---------- Download & reset ---------- */
+  downloadBtn.addEventListener('click', () => {
+    if (!cleanedDone) return;
+    afterCanvas.toBlob(blob => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = fileName.replace(/\.jpe?g$/i, '') + '-cleaned.jpg';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }, 'image/jpeg', 0.95);
+  });
+
+  resetBtn.addEventListener('click', () => {
+    originalImage = null;
+    cleanedDone = false;
+    viewerWrap.style.display = 'none';
+    cleanBtn.disabled = true;
+    downloadBtn.disabled = true;
+    resetBtn.disabled = true;
+    fileInput.value = '';
+    setStatus('Choose an image to get started.');
+  });
+})();
+</script>
+</body>
+</html>
